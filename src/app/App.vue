@@ -141,8 +141,9 @@ function fullscreen() {
             <b>随心探索，自由建造</b>
             <p>
               单击放置或拆除 · 拖动旋转视角<br />右键拖动平移 · 滚轮缩放<br />R
-              选择两个角点 · Esc 取消选择<br />Tab 切换行走 · WASD 移动 ·
-              空格跳跃
+              选择两个角点，相机自动环绕选区<br />Esc 取消选择<br />Tab
+              切换行走 · WASD 移动 · 空格跳跃<br />探索时拖动环视 ·
+              滚轮调整跟随距离，穿墙视角自动拉近/淡出
             </p>
             <button class="soft" @click="help = false">开始建造</button>
           </div>

@@ -1,7 +1,8 @@
 import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { blockMeshes, disposeGroup } from "./meshes";
+import { blockMeshes, disposeGroup, type BlockMeshes } from "./meshes";
+import { CameraRig, defaultViews, type RigMode } from "./cameraRig";
 import type { Workspace, Vec3 } from "../../../shared/document";
+import { key } from "../../../shared/document";
 import type { SceneHit } from "../../../shared/commands";
 export function mountScene(
   host: HTMLElement,
@@ -22,17 +23,24 @@ export function mountScene(
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   host.appendChild(renderer.domElement);
-  const controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(0, 2, 0);
-  controls.maxPolarAngle = Math.PI / 2.1;
-  controls.minDistance = 8;
-  controls.maxDistance = 70;
-  controls.enableDamping = true;
-  controls.mouseButtons = {
-    LEFT: THREE.MOUSE.ROTATE,
-    MIDDLE: THREE.MOUSE.DOLLY,
-    RIGHT: THREE.MOUSE.PAN,
-  };
+
+  let blocks: BlockMeshes = blockMeshes(state.doc);
+  scene.add(blocks.group);
+  let fadeSet = new Set<string>();
+  let activeFadeSig = "";
+  let revision = state.doc.revision;
+
+  const rig = new CameraRig({
+    camera,
+    dom: renderer.domElement,
+    getDoc: () => state.doc,
+    getPlayer: () => state.doc.player,
+    getMode: () => (state.mode === "walk" ? "follow" : "orbit"),
+    onFadeChange: (cells) => {
+      fadeSet = cells;
+    },
+  });
+
   scene.add(new THREE.HemisphereLight("#fffae8", "#779082", 2.5));
   const sun = new THREE.DirectionalLight("#fff1d5", 3);
   sun.position.set(-15, 32, 18);
@@ -57,8 +65,7 @@ export function mountScene(
   const grid = new THREE.GridHelper(32, 32, "#abb9ad", "#c3cec3");
   grid.position.y = 0.005;
   scene.add(grid);
-  let blocks = blockMeshes(state.doc);
-  scene.add(blocks);
+
   const cursor = new THREE.Mesh(
     new THREE.BoxGeometry(1.02, 1.02, 1.02),
     new THREE.MeshBasicMaterial({ color: "#e9b261", wireframe: true }),
@@ -89,46 +96,60 @@ export function mountScene(
   head.position.y = 1.4;
   avatar.add(body, head);
   scene.add(avatar);
+
   const ray = new THREE.Raycaster();
-  const mouse = new THREE.Vector2();
+  const ndc = new THREE.Vector2();
+  let pointerKnown = false;
   let hit: SceneHit | null = null;
-  const move = (e: PointerEvent) => {
-    const r = renderer.domElement.getBoundingClientRect();
-    mouse.set(
-      ((e.clientX - r.left) / r.width) * 2 - 1,
-      (-(e.clientY - r.top) / r.height) * 2 + 1,
-    );
-    ray.setFromCamera(mouse, camera);
-    const h = ray.intersectObjects(blocks.children)[0];
-    hit = null;
+  let down = { x: 0, y: 0 };
+
+  /** 用当前（本帧）相机矩阵做拾取，保证相机运动与指针拾取同源 */
+  function pick(): SceneHit | null {
+    if (!pointerKnown) return null;
+    ray.setFromCamera(ndc, camera);
+    const h = ray.intersectObjects(blocks.pickables, false)[0];
     if (h && h.instanceId !== undefined && h.face) {
       const cell = h.object.userData.cells[h.instanceId] as Vec3;
       const n = h.face.normal;
-      hit = {
+      const result: SceneHit = {
         cell: { ...cell },
         adjacent: { x: cell.x + n.x, y: cell.y + n.y, z: cell.z + n.z },
       };
-      const p = state.tool === "place" ? hit.adjacent : hit.cell;
+      const p = state.tool === "place" ? result.adjacent : result.cell;
       cursor.position.set(p.x + 0.5, p.y + 0.5, p.z + 0.5);
+      return result;
     }
-    cursor.visible = !!hit;
+    return null;
+  }
+
+  const onPointerMove = (e: PointerEvent) => {
+    const r = renderer.domElement.getBoundingClientRect();
+    ndc.set(
+      ((e.clientX - r.left) / r.width) * 2 - 1,
+      (-(e.clientY - r.top) / r.height) * 2 + 1,
+    );
+    pointerKnown = true;
   };
-  let down = { x: 0, y: 0 };
-  const start = (e: PointerEvent) => {
+  const onPointerDown = (e: PointerEvent) => {
     down = { x: e.clientX, y: e.clientY };
   };
-  const click = (e: PointerEvent) => {
+  const onPointerUp = (e: PointerEvent) => {
+    // 模式切换过渡期间或仍在过渡中按下的点击一律忽略，避免一次点击被解释成两个位置
     if (
-      e.button === 0 &&
-      Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5 &&
-      hit &&
-      state.mode === "build"
+      e.button !== 0 ||
+      rig.inputLocked ||
+      state.mode !== "build" ||
+      Math.hypot(e.clientX - down.x, e.clientY - down.y) >= 5
     )
-      onHit(hit);
+      return;
+    // 点击瞬间以同一帧相机矩阵重新检测，而不是复用旧帧缓存
+    const fresh = pick();
+    if (fresh) onHit(fresh);
   };
-  renderer.domElement.addEventListener("pointermove", move);
-  renderer.domElement.addEventListener("pointerdown", start);
-  renderer.domElement.addEventListener("pointerup", click);
+  renderer.domElement.addEventListener("pointermove", onPointerMove);
+  renderer.domElement.addEventListener("pointerdown", onPointerDown);
+  renderer.domElement.addEventListener("pointerup", onPointerUp);
+
   const resize = new ResizeObserver(() => {
     const w = host.clientWidth,
       h = host.clientHeight;
@@ -137,17 +158,44 @@ export function mountScene(
     renderer.setSize(w, h);
   });
   resize.observe(host);
+
   let frame = 0,
-    revision = -1;
-  function animate() {
+    currentDoc = state.doc,
+    regionKey: string | null = null,
+    rigMode: RigMode = "orbit";
+
+  function rebuildBlocks() {
+    scene.remove(blocks.group);
+    disposeGroup(blocks.group);
+    blocks = blockMeshes(state.doc, fadeSet);
+    scene.add(blocks.group);
+    revision = state.doc.revision;
+    activeFadeSig = fadeSig(fadeSet);
+  }
+
+  function animate(now: number) {
     frame = requestAnimationFrame(animate);
-    if (revision !== state.doc.revision) {
-      scene.remove(blocks);
-      disposeGroup(blocks);
-      blocks = blockMeshes(state.doc);
-      scene.add(blocks);
-      revision = state.doc.revision;
+    // 存档载入：文档被整体替换，按新窗口比例恢复各自视角
+    if (state.doc !== currentDoc) {
+      currentDoc = state.doc;
+      rig.applyLoaded(state.doc.views ?? defaultViews());
+      regionKey = null;
+      rebuildBlocks();
     }
+    const nextMode: RigMode = state.mode === "walk" ? "follow" : "orbit";
+    if (nextMode !== rigMode && !rig.inputLocked) {
+      rigMode = nextMode;
+      rig.setMode(nextMode);
+    }
+    rig.update(now);
+
+    // 方块变更或淡出集合变化才重建；淡出方块的碰撞与拾取仍在同一数据上
+    if (
+      state.doc.revision !== revision ||
+      fadeSig(fadeSet) !== activeFadeSig
+    )
+      rebuildBlocks();
+
     avatar.position.set(
       state.doc.player.x,
       state.doc.player.y,
@@ -155,6 +203,11 @@ export function mountScene(
     );
     if (state.region) {
       const { a, b } = state.region;
+      const rk = `${key(a)}>${key(b)}`;
+      if (rk !== regionKey) {
+        regionKey = rk;
+        rig.focusRegion(state.region);
+      }
       region.visible = true;
       region.position.set(
         (a.x + b.x + 1) / 2,
@@ -166,23 +219,44 @@ export function mountScene(
         Math.abs(a.y - b.y) + 1,
         Math.abs(a.z - b.z) + 1,
       );
-    } else region.visible = false;
-    controls.update();
+    } else if (regionKey !== null) {
+      regionKey = null;
+      rig.clearRegionFocus();
+      region.visible = false;
+    }
+
+    // 相机更新之后再拾取：悬停准星与点击使用的是同一帧视图
+    hit = pick();
+    cursor.visible = !!hit;
     renderer.render(scene, camera);
   }
-  animate();
+  animate(0);
+  // 只读探针：供端到端验证相机姿态/淡出集合，不参与业务逻辑
+  (renderer.domElement as any).__cameraProbe = () => ({
+    ...rig.probe(),
+    position: camera.position.toArray(),
+    near: camera.near,
+    aspect: camera.aspect,
+    fade: [...fadeSet],
+  });
   return {
     reset() {
-      camera.position.set(30, 27, 34);
-      controls.target.set(0, 2, 0);
+      rigMode = "orbit";
+      rig.reset();
     },
     dispose() {
       cancelAnimationFrame(frame);
       resize.disconnect();
-      controls.dispose();
-      disposeGroup(blocks);
+      rig.dispose();
+      disposeGroup(blocks.group);
       renderer.dispose();
+      renderer.domElement.removeEventListener("pointermove", onPointerMove);
+      renderer.domElement.removeEventListener("pointerdown", onPointerDown);
+      renderer.domElement.removeEventListener("pointerup", onPointerUp);
       renderer.domElement.remove();
     },
   };
+}
+function fadeSig(set: Set<string>) {
+  return [...set].sort().join(",");
 }

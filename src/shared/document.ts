@@ -15,6 +15,22 @@ export interface WorldDocument {
   inventory: Record<MaterialId, number>;
   player: Vec3;
   revision: number;
+  views?: CameraViews;
+}
+export interface OrbitView {
+  target: Vec3;
+  yaw: number;
+  pitch: number;
+  distance: number;
+}
+export interface FollowView {
+  yaw: number;
+  pitch: number;
+  distance: number;
+}
+export interface CameraViews {
+  orbit: OrbitView;
+  follow: FollowView;
 }
 export interface Region {
   a: Vec3;

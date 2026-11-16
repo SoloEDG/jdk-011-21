@@ -11,7 +11,13 @@ onMounted(
   () => (scene = mountScene(host.value!, props.state, (h) => emit("hit", h))),
 );
 onBeforeUnmount(() => scene?.dispose());
-defineExpose({ reset: () => scene?.reset() });
+defineExpose({
+  reset: () => {
+    // 重置视角回到默认轨道位，并退出探索模式
+    props.state.mode = "build";
+    scene?.reset();
+  },
+});
 </script>
 <template>
   <div ref="host" class="world-canvas" aria-label="三维方块世界"></div>

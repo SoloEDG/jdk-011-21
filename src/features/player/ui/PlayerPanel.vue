@@ -29,6 +29,8 @@ defineEmits<{ toggle: [] }>();
       {{ state.mode === "walk" ? "返回建造模式" : "进入行走模式" }}
       <span>Tab</span>
     </button>
-    <p class="small muted">W A S D 移动 · 空格跳跃</p>
+    <p class="small muted">
+      W A S D 移动 · 空格跳跃<br />拖动环视 · 滚轮调整跟随距离
+    </p>
   </section>
 </template>
